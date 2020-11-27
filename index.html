@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="description"
+      content="An encounter-based, interactive storyworld. Lead System Designer: Chris Crawford. Interpreter coding and implementation: Sasha Fenn. Storyworld author: Anonymous."
+    />
+    <meta name="author" content="Anonymous" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Encounter Storyworld Interpreter</title>
+    <style>
+      body {
+        background-color: LavenderBlush;
+      }
+
+      .collapsible {
+        background-color: #453d5c;
+        color: white;
+        cursor: pointer;
+        padding: 18px;
+        width: 100%;
+        border: none;
+        text-align: left;
+        outline: none;
+        font-size: 15px;
+      }
+
+      .active,
+      .collapsible:hover {
+        background-color: #675c8a;
+      }
+
+      .content {
+        padding: 0 16px;
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.5s ease-out;
+        background-color: Thistle;
+      }
+    </style>
+    <script type="text/javascript" src="storyworld_data.js"></script>
+    <script>
+      //--------------------------
+      //Section 1: Basic Functions
+      //--------------------------
+
+      //This function merely helps figure out which option is selected.
+      function getRadioVal(form, name) {
+        var val;
+        // get list of radio buttons with specified name
+        var radios = document.getElementById(form).elements[name];
+
+        // loop through list of radio buttons
+        for (var i = 0, len = radios.length; i < len; i++) {
+          if (radios[i].checked) {
+            // radio checked?
+            val = radios[i].value; // if so, hold its value in val
+            break; // and break out of for loop
+          }
+        }
+        return val; // return value of checked radio or undefined if none checked
+      }
+
+      function blendChange(x, delta) {
+        return x * (1 - Math.abs(delta)) + delta;
+      }
+
+      //------------------
+      //Section 2: Classes
+      //Define classes for encounters, player options, (i.e. verbs,) character reactions, (i.e. more verbs,) and characters.
+      //------------------
+
+      //Define what an encounter consists of:
+      class Encounter {
+        constructor(
+          id,
+          title,
+          main_text,
+          prerequisites,
+          disqualifiers,
+          earliest_turn,
+          latest_turn,
+          antagonist,
+          options
+        ) {
+          this.id = id; //a string that uniquely identifies this encounter, used for dictionary keys.
+          this.title = title; //string
+          this.main_text = main_text; //string
+          //Prerequisites and disqualifiers consist of the names of encounters, so each array is a list of strings.
+          this.prerequisites = prerequisites; //array
+          this.disqualifiers = disqualifiers; //array
+          this.earliest_turn = earliest_turn; //integer
+          this.latest_turn = latest_turn; //integer
+          this.antagonist = antagonist; //integer
+          this.options = options; //array
+        }
+      }
+
+      //Define an option and its associated reactions:
+      class Player_Option {
+        constructor(text, reactions) {
+          this.text = text; //string
+          this.reactions = reactions; //array
+        }
+      }
+
+      class Character_Reaction {
+        constructor(
+          text,
+          blend_x,
+          blend_y,
+          blend_weight,
+          consequence,
+          deltaLove,
+          deltaTrust,
+          deltaFear
+        ) {
+          this.text = text; //Text to display to player if reaction is chosen.
+          this.blend_x = blend_x;
+          this.blend_y = blend_y;
+          this.blend_weight = blend_weight;
+          this.consequence = consequence; //An encounter that must happen next if reaction is chosen.
+          this.deltaLove = deltaLove; //Change to pBad_Good.
+          this.deltaTrust = deltaTrust; //Change to pFalse_Honest.
+          this.deltaFear = deltaFear; //Change to pTimid_Dominant.
+        }
+      }
+
+      class Character {
+        constructor(
+          name,
+          pronoun,
+          Bad_Good,
+          False_Honest,
+          Timid_Dominant,
+          pBad_Good,
+          pFalse_Honest,
+          pTimid_Dominant
+        ) {
+          this.name = name; //The character's name.
+          this.pronoun = pronoun; //They, she, he, etc.
+          this.Bad_Good = Bad_Good; //How good or bad this character is.
+          this.False_Honest = False_Honest; //How dishonest or honest this character is.
+          this.Timid_Dominant = Timid_Dominant; //How timid or dominant this character is.
+          this.pBad_Good = pBad_Good; //Hate or love for the player character.
+          this.pFalse_Honest = pFalse_Honest; //Suspicion of or trust in the player character.
+          this.pTimid_Dominant = pTimid_Dominant; //Fear of the player character.
+        }
+      }
+
+      //-------------------
+      //Section 3: Database
+      //-------------------
+
+      //Here is the database of encounters.
+      var encounters = {};
+
+      //The void encounter triggers when no other encounters are acceptable.
+      var void_reaction = new Character_Reaction(
+        "...Just breathe...",
+        "pBad_Good",
+        "pTimid_Dominant",
+        0,
+        "wild",
+        0,
+        0,
+        0
+      );
+      var void_option = new Player_Option("...Breathe...", [void_reaction]);
+
+      var void_encounter = new Encounter(
+        "void", //This encounter is displayed if and when no encounters from the database are deemed acceptable.
+        //Since this encounter is not contained in the encounters database, it will normally not be chosen or seen.
+        "Time Passes", //title
+        "The future can wait. You take this moment to breathe.",
+        [],
+        [],
+        0, //earliest turn
+        16384, //latest turn
+        0, //antagonist
+        [void_option]
+      );
+
+      //The splash screen encounter triggers when the page is first loaded.
+      var splash_reaction = new Character_Reaction(
+        "...",
+        "pBad_Good",
+        "pTimid_Dominant",
+        0,
+        "wild",
+        0,
+        0,
+        0
+      );
+      var splash_option = new Player_Option("Begin", [splash_reaction]);
+
+      var splash_encounter = new Encounter(
+        "splash", //This encounter is displayed if and when no encounters from the database are deemed acceptable.
+        //Since this encounter is not contained in the encounters database, it will normally not be chosen or seen.
+        "Welcome", //title
+        "~ ~ ~ ~ ~",
+        [],
+        [],
+        0, //earliest turn
+        16384, //latest turn
+        0, //antagonist
+        [splash_option]
+      );
+
+      //We need to keep track of the present encounter.
+      var current_page = void_encounter;
+      var next_page = "wild"; //"wild" means a page is chosen semi-randomly, other values specify specific pages.
+      var current_antagonist = 0;
+      var turn = 0;
+
+      //Here is the database of characters.
+      var characters = [
+        //new Character("Fate", "they", 0, 0, 0, 0, 0, 0)
+      ];
+
+      //Here is the history book. Each entry includes an encounter, an option, and a reaction, but the option and reaction entries can equal -1, indicating that none have yet been selected. This database can be exported as a save file.
+
+      var slow_historybook = [
+        //{"encounter": "start", "option": -1, "reaction": -1}
+      ];
+
+      //To enable quick searching of the historybook, here is a dictionary / hash table version. Each key is the name of the encounter, a unique string, while the associated value is the turn when it occured, which also works as an index to the above array if the chosen option and reaction are also needed.
+
+      var quick_historybook = {
+        //"start": 0
+      };
+
+      //The following string keeps a transcript of play. The player can normally review it at any time.
+
+      var playthrough_transcript = "";
+
+      function parseReactionsData(data) {
+        var reactions = [];
+        for (each of data) {
+          reactions.push(
+            new Character_Reaction(
+              each[0],
+              each[1],
+              each[2],
+              each[3],
+              each[4],
+              each[5],
+              each[6],
+              each[7],
+              each[8]
+            )
+          );
+        }
+        return reactions;
+      }
+
+      function parseOptionsData(data) {
+        var options = [];
+        for (each of data) {
+          options.push(new Player_Option(each[0], parseReactionsData(each[1])));
+        }
+        return options;
+      }
+
+      //Import game data.
+      function importGameData() {
+        //Characters:
+        if (0 == storyworld_data.characters.length) {
+          characters.push(new Character("Fate", "they", 0, 0, 0, 0, 0, 0));
+          console.log("Warning: Storyworld includes no characters!");
+        }
+        for (each of storyworld_data.characters) {
+          characters.push(
+            new Character(
+              each[0],
+              each[1],
+              each[2],
+              each[3],
+              each[4],
+              each[5],
+              each[6],
+              each[7]
+            )
+          );
+        }
+        for (each of storyworld_data.encounters) {
+          encounters[each[0]] = new Encounter(
+            each[0],
+            each[1],
+            each[2],
+            each[3],
+            each[4],
+            each[5],
+            each[6],
+            each[7],
+            parseOptionsData(each[8])
+          );
+        }
+        if (storyworld_data.hasOwnProperty("void_encounter")) {
+          var v_e_data = storyworld_data.void_encounter;
+          void_encounter = new Encounter(
+            v_e_data[0],
+            v_e_data[1],
+            v_e_data[2],
+            v_e_data[3],
+            v_e_data[4],
+            v_e_data[5],
+            v_e_data[6],
+            v_e_data[7],
+            parseOptionsData(v_e_data[8])
+          );
+        }
+        if (storyworld_data.hasOwnProperty("splash_encounter")) {
+          var s_e_data = storyworld_data.splash_encounter;
+          splash_encounter = new Encounter(
+            s_e_data[0],
+            s_e_data[1],
+            s_e_data[2],
+            s_e_data[3],
+            s_e_data[4],
+            s_e_data[5],
+            s_e_data[6],
+            s_e_data[7],
+            parseOptionsData(s_e_data[8])
+          );
+        }
+        if (storyworld_data.hasOwnProperty("first_page")) {
+          next_page = storyworld_data.first_page;
+        }
+      }
+
+      //-----------------------------
+      //Section 4: Saving and Loading
+      //-----------------------------
+
+      function setCookie(cname, cvalue, exdays) {
+        var d = new Date();
+        d.setTime(d.getTime() + exdays * 24 * 60 * 60 * 1000);
+        var expires = "expires=" + d.toGMTString();
+        document.cookie =
+          cname + "=" + cvalue + ";" + expires + ";path=/;SameSite=Lax";
+      }
+
+      function getCookie(cname) {
+        var name = cname + "=";
+        var decodedCookie = decodeURIComponent(document.cookie);
+        var ca = decodedCookie.split(";");
+        for (var i = 0; i < ca.length; i++) {
+          var c = ca[i];
+          while (c.charAt(0) == " ") {
+            c = c.substring(1);
+          }
+          if (c.indexOf(name) == 0) {
+            return c.substring(name.length, c.length);
+          }
+        }
+        return "";
+      }
+
+      var save_profile = {};
+
+      var save_profile_string = getCookie("save_profile");
+      if (save_profile_string != "") {
+        save_profile = JSON.parse(save_profile_string);
+      }
+
+      function saveGame(save_filename, note = "") {
+        save_filename = encodeURIComponent(save_filename);
+        var save_dictionary = {};
+        save_dictionary.save_filename = save_filename;
+        save_dictionary.slow_historybook = slow_historybook;
+        save_dictionary.characters = characters;
+        save_dictionary.note = encodeURIComponent(note);
+        var save_file = JSON.stringify(save_dictionary);
+        setCookie("saved_game_" + save_filename, save_file, 4096);
+        save_profile[save_filename] = new Date().toUTCString();
+        setCookie("save_profile", JSON.stringify(save_profile), 4096);
+        displaySaveProfile();
+        console.log("Saved game: " + save_filename);
+      }
+
+      function loadGame(save_filename) {
+        //Set slow historybook to saved historybook.
+        var save_dictionary = JSON.parse(
+          getCookie("saved_game_" + save_filename)
+        );
+        //console.log("Loading game: " + save_filename + " : " + );
+        slow_historybook = save_dictionary.slow_historybook;
+        characters = save_dictionary.characters;
+        //Fill quick historybook from slow historybook.
+        //Fill transcript from slow historybook as well.
+        quick_historybook = {};
+        playthrough_transcript = "";
+        for (const [index, value] of slow_historybook.entries()) {
+          quick_historybook[value.encounter] = index;
+          if (-1 != value.option && -1 != value.reaction) {
+            writeEncounterToTranscript(
+              value.encounter,
+              value.option,
+              value.reaction
+            );
+          }
+        }
+        document.getElementById(
+          "transcript"
+        ).innerHTML = playthrough_transcript;
+        refreshCollapsable(document.getElementById("transcript"));
+        turn = slow_historybook.length;
+        //Load last encounter.
+        if (
+          "undefined" === typeof slow_historybook[slow_historybook.length - 1]
+        ) {
+          loadEncounter(void_encounter, false); //Don't record to historybook.
+        } else if (
+          "void" == slow_historybook[slow_historybook.length - 1].encounter
+        ) {
+          loadEncounter(void_encounter, false); //Don't record to historybook.
+        } else if (
+          "splash" == slow_historybook[slow_historybook.length - 1].encounter
+        ) {
+          loadEncounter(splash_encounter, false); //Don't record to historybook.
+        } else {
+          loadEncounter(
+            slow_historybook[slow_historybook.length - 1].encounter,
+            false
+          ); //Don't record to historybook.
+        }
+        console.log("Loaded saved game: " + save_filename);
+      }
+
+      function deleteSavedGame(save_filename) {
+        setCookie("saved_game_" + save_filename, "", 0);
+        delete save_profile[save_filename];
+        setCookie("save_profile", JSON.stringify(save_profile), 4096);
+        displaySaveProfile();
+        console.log("Deleted saved game: " + save_filename);
+      }
+
+      function confirmSaveGame(save_filename, note = "") {
+        if ("" == getCookie("saved_game_" + save_filename)) {
+          //No save file by this name exists.
+          saveGame(save_filename, note);
+        } else {
+          var confirmed = confirm(
+            "Do you wish to overwrite this savefile? (" + save_filename + ")"
+          );
+          if (true == confirmed) {
+            saveGame(save_filename, note);
+          }
+        }
+      }
+
+      function confirmLoadGame(save_filename) {
+        var confirmed = confirm(
+          "Do you wish to load this saved game? Unsaved progress will be lost."
+        );
+        if (true == confirmed) {
+          loadGame(save_filename);
+        }
+      }
+
+      function confirmDeleteSavedGame(save_filename) {
+        var confirmed = confirm(
+          "Do you wish to delete this saved game? The savefile will be permanently erased."
+        );
+        if (true == confirmed) {
+          deleteSavedGame(save_filename);
+        }
+      }
+
+      function displaySaveProfile() {
+        var text = "<p><b>Saved Games:</b></p>";
+        for (each in save_profile) {
+          text =
+            text +
+            "<p>" +
+            "<a href=\"javascript:confirmLoadGame('" +
+            each +
+            "')\">Load</a> / <a href=\"javascript:confirmDeleteSavedGame('" +
+            each +
+            "')\">Delete</a> " +
+            decodeURIComponent(each) +
+            " : " +
+            save_profile[each] +
+            " : " +
+            decodeURIComponent(
+              JSON.parse(getCookie("saved_game_" + each)).note
+            ) +
+            "</p>";
+        }
+        document.getElementById("saved_game_list").innerHTML = text;
+        refreshCollapsable(document.getElementById("main_menu"));
+      }
+
+      //Undo Functionality - Potential Future Addition
+      //Will need a way to replay game up to destination turn in order to recalculate character relations, or a way to store character relation data for every turn.
+      /*function undoToTurn(destination){
+  turn = destination;
+  slow_historybook.splice((destination + 1), (slow_historybook.length - destination - 1));
+  quick_historybook = {};
+  playthrough_transcript = "";
+  for (const [index,value] of slow_historybook.entries()){
+    quick_historybook[value.encounter] = index;
+    if (-1 != value.option && -1 != value.reaction){
+	  writeEncounterToTranscript(value.encounter, value.option, value.reaction);
+	}
+  }
+  document.getElementById("transcript").innerHTML = playthrough_transcript;
+  refreshCollapsable(document.getElementById("transcript"));
+  //Load last encounter.
+  if ('undefined' === typeof slow_historybook[slow_historybook.length - 1]){
+    loadEncounter(void_encounter, false);//Don't record to historybook.
+  } else if ("void" == slow_historybook[slow_historybook.length - 1].encounter){
+    loadEncounter(void_encounter, false);//Don't record to historybook.
+  } else if ("splash" == slow_historybook[slow_historybook.length - 1].encounter){
+    loadEncounter(splash_encounter, false);//Don't record to historybook.
+  } else {
+    loadEncounter(slow_historybook[slow_historybook.length - 1].encounter, false);//Don't record to historybook.
+  }
+  console.log("Loaded saved game: " + save_filename);
+}*/
+
+      //-----------------------
+      //Section 5: Main Process
+      //-----------------------
+
+      //Load an encounter:
+      //This one is mildly complicated. It looks up an encounter in the above database and displays it to the player.
+      function loadEncounter(encounter, record = true) {
+        //This function can either take a string as input, in which case it treats the string as the encounter name and looks up the encounter in the encounters database, or it can take an encounter as input, thereby skipping the database lookup.
+        if (typeof encounter == "string") {
+          encounter = encounters[encounter];
+        }
+        console.log(
+          "Turn: " +
+            turn +
+            ' Displaying encounter: "' +
+            encounter.title +
+            '" Antagonist: ' +
+            characters[encounter.antagonist].name
+        );
+        current_page = encounter; //Track which encounter we're in.
+        next_page = "start"; //Set the next encounter to be semi-random.
+        current_antagonist = encounter.antagonist; //integer
+
+        //Now we change the main encounter text to what it needs to be.
+        document.getElementById("encounter_text").innerHTML =
+          "<b>(" + encounter.title + ")</b><br><br>" + encounter.main_text;
+
+        //Now we go through the options one by one, creating links for each.
+        var each;
+        var compiled_options = "";
+        var index = 0;
+        for (each of encounter.options) {
+          //This produces HTML code from a list of options.
+          entry = '&gt; <a href="javascript:executeOption(';
+          entry = entry + index.toString();
+          entry = entry + ')">';
+          entry = entry + each.text;
+          entry = entry + "</a><br>";
+          compiled_options = compiled_options + entry;
+          index++;
+        }
+        document.getElementById("options_list").innerHTML = compiled_options;
+
+        //If there are no options for this encounter, hide the options field.
+        if (0 == encounter.options.length) {
+          document.getElementById("options_text").style.display = "none";
+        } else {
+          document.getElementById("options_text").style.display = "block";
+        }
+
+        //Render the reaction field invisible.
+        document.getElementById("reaction_field").style.display = "none";
+        document.getElementById("reaction_text").innerHTML = "";
+
+        if (record) {
+          //if we're recording to the historybook and transcript:
+          //Update the transcript.
+          document.getElementById(
+            "transcript"
+          ).innerHTML = playthrough_transcript;
+          refreshCollapsable(document.getElementById("transcript"));
+
+          //Update the historybook.
+          slow_historybook[turn] = {
+            encounter: current_page.id,
+            option: -1,
+            reaction: -1
+          };
+          quick_historybook[current_page.id] = turn;
+          //Most encounters can only be displayed once. However, the void encounter can be displayed multiple times, (whenever no other encounters are acceptable for display,) and the "consequence" property of character reactions bypasses the check of whether an encounter has already been displayed. In these cases the quick_historybook will only record the latest turn the encounter was displayed. Since the quick_historybook is primarilly used to check for prerequisites and disqualifiers, and to avoid displaying encounters more than once, the information needed is whether an encounter has occured; when it occured is presently less important. If future changes to the overall design eventually require it, entries to the quick_historybook can be changed to arrays of integers, rather than integers, to record all turns an encounter is displayed.
+        }
+
+        //If all goes well... It's the player's turn!
+      }
+
+      function executeOption(which) {
+        var reactions = current_page.options[parseInt(which)].reactions;
+        var topInclination = -1; //Reset variable to lowest possible value, -1.
+        var workingChoice = 0; //Which reaction will the character choose? Reset variable.
+        var antagonistLove = characters[current_antagonist].pBad_Good;
+        var antagonistTrust = characters[current_antagonist].pFalse_Honest;
+        var antagonistFear = characters[current_antagonist].pTimid_Dominant;
+        var index = 0;
+        for (each of reactions) {
+          //This chooses how a character reacts to the player's choice.
+          var weight = (each.blend_weight + 1) / 2;
+          var blend_x = each.blend_x;
+          var blend_x_sign = 1;
+          if ("-" == blend_x.charAt(0)) {
+            blend_x = blend_x.substr(1);
+            blend_x_sign = -1;
+          }
+          var blend_x_value =
+            blend_x_sign * characters[current_antagonist][blend_x];
+          var blend_y = each.blend_y;
+          var blend_y_sign = 1;
+          if ("-" == blend_y.charAt(0)) {
+            blend_y = blend_y.substr(1);
+            blend_y_sign = -1;
+          }
+          var blend_y_value =
+            blend_y_sign * characters[current_antagonist][blend_y];
+          var latestInclination =
+            blend_x_value * (1 - weight) + blend_y_value * weight;
+          if (latestInclination >= topInclination) {
+            topInclination = latestInclination;
+            workingChoice = index;
+          }
+          index++;
+          console.log(
+            'Reaction: "' +
+              each.text.substr(0, 9) +
+              '..." Inclination: ' +
+              latestInclination.toString() +
+              " Blended " +
+              each.blend_x +
+              " (" +
+              blend_x_value +
+              ") and " +
+              each.blend_y +
+              " (" +
+              blend_y_value +
+              ") with weight " +
+              each.blend_weight +
+              "."
+          );
+        }
+        //Execute reaction:
+        //If a consequence encounter is defined, ensure that occurs next:
+        next_page = reactions[workingChoice].consequence;
+        //Make appropriate changes to character relations:
+        characters[current_antagonist].pBad_Good = blendChange(
+          antagonistLove,
+          reactions[workingChoice].deltaLove
+        );
+        characters[current_antagonist].pFalse_Honest = blendChange(
+          antagonistTrust,
+          reactions[workingChoice].deltaTrust
+        );
+        characters[current_antagonist].pTimid_Dominant = blendChange(
+          antagonistFear,
+          reactions[workingChoice].deltaFear
+        );
+        //Change text of options list to show only the text of the option chosen by the player.
+        document.getElementById("options_list").innerHTML =
+          "&gt; " + current_page.options[parseInt(which)].text;
+        //Display text of chosen reaction.
+        document.getElementById("reaction_field").style.display = "block";
+        document.getElementById("reaction_text").innerHTML =
+          reactions[workingChoice].text;
+        if (current_page != "splash") {
+          //Unless we're just starting a new game.
+          //We already wrote the present encounter to the quick_historybook when we displayed the encounter. We also wrote it to the slow_historybook, but left the player and character choices "blank," (i.e. at -1.) Now we record the player and character choices in the slow_historybook.
+          slow_historybook[turn] = {
+            encounter: current_page.id,
+            option: which,
+            reaction: workingChoice
+          };
+        }
+      }
+
+      //Update transcript with text of the present encounter, option, and reaction.
+      function writeToTranscript() {
+        playthrough_transcript =
+          playthrough_transcript +
+          "<p><b>~~~~~</b></p>" +
+          document.getElementById("encounter_text").innerHTML +
+          "<p>" +
+          document.getElementById("options_list").innerHTML +
+          "</p><p>" +
+          document.getElementById("reaction_text").innerHTML +
+          "</p>";
+      }
+
+      function writeEncounterToTranscript(encounter_name, option, reaction) {
+        var encounter;
+        if ("void" == encounter_name) {
+          encounter = void_encounter;
+        } else if ("splash" == encounter_name) {
+          //Should never occur, as splash screen is not recorded to historybook.
+          encounter = splash_encounter;
+        } else {
+          encounter = encounters[encounter_name];
+        }
+        if (
+          "undefined" == typeof encounter.options[option] ||
+          "undefined" == typeof encounter.options[option].reactions[reaction]
+        ) {
+          //Test for corrupted savefile, or other errors.
+          playthrough_transcript =
+            playthrough_transcript +
+            "<p><b>~~~~~</b></p>" +
+            "<b>(" +
+            encounter.title +
+            ")</b><br><br>" +
+            encounter.main_text +
+            "<p>" +
+            "&gt; " +
+            "Option and/or reaction undefined." +
+            "</p>";
+        } else {
+          playthrough_transcript =
+            playthrough_transcript +
+            "<p><b>~~~~~</b></p>" +
+            "<b>(" +
+            encounter.title +
+            ")</b><br><br>" +
+            encounter.main_text +
+            "<p>" +
+            "&gt; " +
+            encounter.options[option].text +
+            "</p><p>" +
+            encounter.options[option].reactions[reaction].text +
+            "</p>";
+        }
+      }
+
+      //Select which encounter comes next:
+      function selectEncounter() {
+        console.log("Selecting next encounter.");
+        if (0 != turn) {
+          //Unless we're just starting a new game.
+          writeToTranscript(); //Record the last encounter to the transcript before moving on.
+        }
+        turn = turn + 1;
+        if ("wild" != next_page) {
+          //If the reaction of the last encounter led to a consequence, that consequence occurs next.
+          loadEncounter(next_page);
+        } else {
+          //Otherwise:
+          var each;
+          var encounter;
+          var acceptable_encounters = [];
+          for (each in encounters) {
+            encounter = encounters[each];
+            //Check whether an encounter is acceptable.
+            var acceptable = false;
+            //If turn is within range, and encounter has not occured before,
+            console.log(
+              "Checking acceptability of: " +
+                encounter.title +
+                " | " +
+                encounter.earliest_turn.toString() +
+                " <= " +
+                turn.toString() +
+                " <= " +
+                encounter.latest_turn.toString()
+            );
+            if (
+              encounter.earliest_turn <= turn &&
+              turn <= encounter.latest_turn &&
+              !quick_historybook.hasOwnProperty(encounter.id)
+            ) {
+              acceptable = true;
+              //and all prerequisites are in the historybook,
+              var x;
+              for (x of encounter.prerequisites) {
+                if (!quick_historybook.hasOwnProperty(x)) {
+                  //if a prerequisite is not contained in the historybook:
+                  acceptable = false;
+                }
+              }
+              //and no disqualifiers are in the historybook,
+              for (x of encounter.disqualifiers) {
+                if (quick_historybook.hasOwnProperty(x)) {
+                  //if a disqualifier is contained in the historybook:
+                  acceptable = false;
+                }
+              }
+            }
+            if (acceptable) {
+              console.log(
+                "Encounter: " + encounter.title + " deemed acceptable."
+              );
+              acceptable_encounters.push(encounter.id);
+            }
+          } //end of for (each in encounters)
+          //If no encounters are deemed acceptable, display the "void" encounter.
+          if (0 == acceptable_encounters.length) {
+            loadEncounter(void_encounter);
+          } else {
+            //Choose a random encounter from the pool of acceptable encounters.
+            next_page =
+              acceptable_encounters[
+                Math.floor(Math.random() * acceptable_encounters.length)
+              ];
+            //Add the chosen encounter to the historybook, then display it.
+            loadEncounter(next_page);
+          }
+        }
+      }
+
+      //Start a new game / playthrough.
+      function startNewGame(ask_for_confirmation = true) {
+        var confirmed = true;
+        if (ask_for_confirmation) {
+          confirmed = confirm(
+            "Do you wish to start a new game? Unsaved progress will be lost."
+          );
+        }
+        if (true == confirmed) {
+          slow_historybook = [];
+          quick_historybook = {};
+          playthrough_transcript = "";
+          turn = 0;
+          current_page = void_encounter;
+          next_page = "wild";
+          current_antagonist = 0;
+          displaySaveProfile();
+          importGameData(); //Reset Character relations.
+          selectEncounter();
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <button class="collapsible">Menu</button>
+    <div id="main_menu" class="content">
+      <p><a href="javascript:startNewGame()">Start New Game</a></p>
+      <div id="saved_game_list"></div>
+      <p>
+        <a
+          href="javascript:confirmSaveGame(document.getElementById('save_name').value,document.getElementById('save_note').value)"
+          >Save Game As:</a
+        >
+        <input type="text" id="save_name" />
+      </p>
+      <p>
+        Optional Journal Entry:<br /><textarea id="save_note">
+Here you may add a note to your savefile, if you wish.</textarea
+        >
+      </p>
+    </div>
+    <button class="collapsible">~Transcript~</button>
+    <div id="transcript" class="content">
+      <p>~~~~~</p>
+    </div>
+    <fieldset>
+      <legend><i>~~~</i></legend>
+      <div id="encounter_text">
+        Once the game begins, encounter text will be placed here by a properly
+        functioning script.
+      </div>
+    </fieldset>
+    <br />
+    <div id="options_text">
+      <form action="#" method="post" id="optionsForm">
+        <fieldset>
+          <legend>Choose your path:</legend>
+          <div id="options_list"></div>
+        </fieldset>
+      </form>
+    </div>
+    <div id="reaction_field">
+      <fieldset>
+        <legend><i>~~~</i></legend>
+        <div id="reaction_text">
+          This field will display how characters react to the player's choices.
+        </div>
+        <br /><a href="javascript:selectEncounter()">---</a>
+      </fieldset>
+    </div>
+    <br />
+
+    <script>
+      //This script enables collapsible sections to work, such as the playthrough-transcript.
+      var coll = document.getElementsByClassName("collapsible");
+      var i;
+
+      for (i = 0; i < coll.length; i++) {
+        coll[i].addEventListener("click", function() {
+          this.classList.toggle("active");
+          var content = this.nextElementSibling;
+          if (content.style.maxHeight) {
+            content.style.maxHeight = null;
+          } else {
+            content.style.maxHeight = content.scrollHeight + "px";
+          }
+        });
+      }
+
+      function refreshCollapsable(element) {
+        if (element.style.maxHeight) {
+          element.style.maxHeight = element.scrollHeight + "px";
+        }
+      }
+    </script>
+    <script>
+      var storyworld_data = {"characters":[["Sam","she",0.13,-0.05,0.35,-0.1,0,0]],"encounters":[["encounter_0","A Bad Day","What a day! The meetings dragged on for hours while people just yakked and yakked without ever saying anything. Marie was in a foul mood and made sure that everybody knew it. Steve was his usual boasting self. While you were wasting time in meetings, the phone messages and emails were piling up at your desk. And Brad... damn, he couldn't manage his way out of a paper bag. \n\nYou didn't get back to your desk until 5:00, and you decided to call it quits for the day. You clawed your way through traffic, but made an impulsive decision to take the right turn leading up into the hills. You have a special place about ten miles out. You pull into the little turnout at the side of the road and head up the faint trail. After a few hundred yards, you break away from the trail, shove your way through some brush for fifty yards, and reach your special place: a big rock at the top of a slope, from which you can look out across the canyon and see a panorama of pure nature. You sit down on the rock and take in the view. It's so relaxing. You're shielded from the noise and hubbub of the city by an intervening ridge, and here there's nothing but peace and nature. You take a deep breath and smile. You're at your special place. You close your eyes and think clean, natural thoughts. \n\nIn this state of mind, time can pass quickly or slowly; only the slow lengthening of the shadows as the sun nears the horizon gives you any sense of the passage of time. You are jolted out of your reverie by the sound of something crashing through the brush. Alarmed, you look all around, but the sound stops and you can't figure out where it came from. Is there some kind of animal out here? You've heard that mountain lions sometimes come out of the hills and get this close to the city--could that sound have been a mountain lion? The sound resumes, and it's definitely getting closer. Your eyes widen and you strain your ears to locate the source. Whatever it is, it's big and its approaching. Your heart is pounding and you start to stand up, when a person appears, breaking through the last branches of brush. It's a woman; a branch snags her blouse and she works to free it before sees you for the first time. She jerks backwards in fright.\n\n\"Oh, God!\" she blurts. \"Uh...\" She stares at you in confusion and fear.",[],[],1,1,0,[["\"How did you know about this place?\"",[["She stares at you, mute, for a moment. \"Uh... I found it.\"","Bad_Good","False_Honest",0,"wild",-0.1,0,0.1]]],["\"Hey, no worries. I don't bite.\"",[["She smiles weakly. \"I just didn't expect to find anybody here.\"","Bad_Good","False_Honest",0,"wild",0.05,0,0.05]]],["\"Uh....\"",[["She stares at you, then announces, \"Hello there...\"","Bad_Good","False_Honest",0,"wild",0,0,-0.1]]]]],["encounter_1","First Meeting","You climb down from the rock and smile at her. She's black of hair, short of stature, and just a wee bit heftier than slim. Her face is roundish, and at first you think she is Asian because her black hair is cut short. But no, on closer inspection, you realize that she's not Asian.\n\nShe's wearing jeans, a lumberjack's shirt, and solid boots; ideal apparel for fighting through this heavy brush. For a moment, you wonder if she isn't perhaps a fireman... er, firewoman... whatever. \n\n\"What's your name?\" \n\nShe pauses, looking at you quizzically, then answers, \"I'm Sam.\" \n\n\"Nice to meet you, Sam. I'm Jeff.\" \n\nAgain she pauses, then answers \"Hello, Jeff.\" \n\n\"So, uh, Sam, you seem to be quite an explorer, pushing through dense brush like this.\"\n\n\"No\", she says, \"I discovered this spot a year ago, and I come here whenever I need to think. When did you find it?\"\n\nYou are taken aback; you only found this place about five months ago.",[],[],2,2,0,[["\"Oh, I've been coming here for years\" I breezily say.",[["Sam raises one eyebrow and expresses her admiration.","Bad_Good","False_Honest",0,"wild",-0.1,-0.2,0.2]]],["\"Really? I found this place only about five months ago.\"",[["\"It's not easy to find\" she notes. \"I had been coming up here for a year before I stumbled onto this spot.\"","Bad_Good","False_Honest",0,"wild",0.1,0.1,-0.1]]]]],["encounter_2","Introductions","\"So why do you come here?\" you ask.\n\n\"I love the view from this spot. It's so quiet and peaceful. I've never met or even heard anybody else here and I feel like I have the whole world to myself.\"\n\n\"It looks like I've ruined that for you\" you admit faux-ruefully. \n\nShe grins. \"I suppose we'll have to set up a schedule so that we don't run into each other.\" \n\n\"Why don't we sit down together and take in the view?\" you ask.\n\nHer face darkens. \"No, for me, this is a place for solitary contemplation. It just wouldn't be right sharing it with anybody else.\"",[],[],3,3,0,[["\"OK, if that's the way you want it.\" I depart.",[["\"Nice meeting you...\" she says as you go.","Bad_Good","False_Honest",0,"encounter_d",0,0,0]]],["\"I understand completely. I'll leave now. But what do you say we get together for lunch to arrange a schedule so we don't bump into each other like this again?\"",[["She hesitates but a moment, then smiles and says, \"Yeah, sure, why not?\"","pBad_Good","pTimid_Dominant",0,"encounter_3",0.14,0,0.16],["She looks down towards the ground, scrapes her toe in the dirt, and says, \"I don't think so.\"","-pBad_Good","-pFalse_Honest",0,"encounter_e",0,0,0]]]]],["encounter_3","Schedule Lunch","\"How about Greenie Gertie's on Salvador Avenue?\", you suggest.\n\n\"Is that the salad place with the bright green neon sign?\", she asks.\n\n\"Yep, that's it. They've got really fancy salad fixings.\"\n\n\"Oh... I got food poisoning there once a few years back, and I've never been willing to give them a second chance. Do you like Vico's on Oak Street?\", she asks.\n\n\"Sounds great!\", you answer. \n\n\"Thursday? 12:30?\"\n\n\"Sure.\"\n\n\"I'll see you then.\"",[],[],4,4,0,[["I tip an imaginary hat and take my leave.",[["\"Toodle-loo!\" she says, wiggling her fingers at you.","Bad_Good","False_Honest",0,"encounter_4",0,0,0]]],["\"See you then!\" I echo.",[["She waves goodbye as you push your way through the brush.","Bad_Good","False_Honest",0,"encounter_4",0,0,0]]]]],["encounter_4","Prepare For Date","Things at work are hectic. Thursday sneaks up behind you and ambushes you with an alarm on your phone as you're wolfing down breakfast.\n\n\"Oh, fiddlesticks!\" you exclaim obsoletely. You barely have time to grab your stuff and get out the door, but you're wearing a slummy shirt with a stain from the moleÂ´ sauce you had on your enchiladas last week, so you run back inside to get a clean shirt. You're late for the morning meeting, which makes you late for the conference call, which makes you late for an appointment with somebody from marketing. Looking out the window of the conference room, you notice the clock that shows the time to be 12:20. Great galloping horny toads! You've got to get to Vico's! But the marketing lady is asking some important questions. You give quick answers, but she keeps asking more questions. Finally you blurt, \"I'm really sorry, Melinda, but I've got a 12:30 lunch appointment.\" Melinda is obviously displeased, but she makes no objection. You dart out of the conference room and rush to the elevator. It is above your floor and moving up, one floor at a time. You use the stairs. It seems as if you reach the end of each block just as the \"Don't Walk\" sign turns on. Fuming at the delays, finally reach Vico's at 12:38. You see Sam at a table, looking out the window with her chin resting on her hand.",[],[],5,5,0,[["\"Hi, Sam\", you say, trying to avoid mentioning your tardiness.",[["Sam looks down and grunts, \"It's OK\"","Bad_Good","False_Honest",0,"encounter_5",-0.15,-0.1,-0.09]]],["\"I'm sorry I'm late. I had a lot of people pawing at me at the office.\"",[["\"I know what it's like\" Sam says.","Bad_Good","False_Honest",0,"encounter_5",-0.05,-0.11,-0.06]]],["\"I'm late; there's no excuse. Here, I'll save you the trouble of reaming me out for it: 'Jeff, you're late! It's not good to keep people waiting!' Is that a good enough reprimand?\"",[["Sam laughs lightly. \"Yeah, that's good enough!\"","Bad_Good","False_Honest",0,"encounter_5",0.1,0.1,0]]]]],["encounter_5","Opening Conversation","You sit down, deliberately unroll the silverware from the napkin, carefully place the knife and fork in the proper locations, place the napkin on your lap, and then look up at Sam. You heave a happy sigh. Sam echos your sigh. \"Well...\" you say. \"Well...\" Sam says.",[],[],6,6,0,[["\"So tell me about your job!\"",[["\"I supervise a team of programmers developing highly interactive websites. They're a good crew. We had a few problems working together in the early days, but now we've gotten most of the kinks out and we work together smoothly.\"","Bad_Good","False_Honest",0,"wild",0.2,0,-0.13]]],["\"My day has been crazy. I've been late to everything. It's funny how being late just once cascades through the entire day.\"",[["\"So do you think this lunch will make you late for your next meeting?\" Sam asks dryly.","Bad_Good","False_Honest",0,"wild",-0.11,0,0.12]]],["\"The weather certainly has been pleasant for the last few days, hasn't it?\"",[["\"Uh... yeah.\" Sam says noncommitally.","Bad_Good","False_Honest",0,"wild",-0.08,0,-0.1]]]]],["encounter_6","What's Your Job?","\"So, tell me about your job.\" Sam asks.",[],[],7,12,0,[["\"I manage the software department for a company that makes widget databases for widget manufacturers all over the world.\"",[["\"Really? That sounds interesting\" Sam replies.","Bad_Good","False_Honest",0,"wild",-0.11,-0.06,0.05]]],["\"I manage a software team that writes code for a manufacturing application.\"",[["\"That must be an intense job\" Sam opines. \"Some programmers can be difficult to handle.\"","Bad_Good","False_Honest",0,"wild",0,0,0]]],["\"My team is pretty small; we're working on an application for manufacturers.\"",[["\"Really? I've always wondered about manufacturing applications. They have to operate under tighter specifications than websites. If you screw up, you can make quite a mess!\"","Bad_Good","False_Honest",0,"wild",0.11,0,-0.1]]]]],["encounter_7","Are you from here?","\"You know, I haven't travelled much. I was born and raised here; I went to high school and community college here. I even graduated from Podunk Municipal University half a mile from here. Where are you from?\"",[],[],7,12,0,[["\"Oh, a bunch of places. My parents moved around a lot.\"",[["\"Hmm... interesting.\"","Bad_Good","False_Honest",0,"wild",0,0,0]]],["\"Jeez, I've been all over the place. My dad's job kept us moving around. I've lived in Minnesota, Delaware, Alabama, Idaho, and Nevada. Nevada was the worst; we lived in this tiny town surrounded by miles and miles of desert. Idaho was the best.\"",[["\"Sounds like a busy childhood.\"","Bad_Good","False_Honest",0,"wild",-0.1,0,0.14]]],["\"Well, my dad's job kept us moving around a lot. I never got much chance to form solid friendships.\"",[["\"That's always hard on a child.\"","Bad_Good","False_Honest",0,"wild",0.19,0.33,-0.17]]]]],["encounter_9","Final Decision","The waiter brings the check and you pick it up. It was certainly a pleasant lunch.",[],[],9,100,0,[["So what do you say we meet for lunch again next week?",[["\"Sounds great! Same time, same place?\"","pBad_Good","pFalse_Honest",0,"encounter_a",0,0,0],["\"I'm kinda busy next week. Can we try for two weeks?\"","pBad_Good","pTimid_Dominant",0,"encounter_b",0,0,0],["\"We're going into a bad crunch. I don't think I'll be having any free time for a while.\"","-pBad_Good","pTimid_Dominant",0,"encounter_c",0,0,0]]]]],["encounter_8","Ask about pets","\"But let's talk about something else. You got any pets? I've got Hermann; he's a gray cat, very sleek and elegant. I made him a nice bed by the window so he can look out on the street below all day long. It faces south, so he gets plenty of sun, too. But he's getting a bit old. How about you?",[],[],9,100,0,[["\"Yeah, I've got a little dog. Her name is Lola.\"",[["Oh, that's sweet!","Bad_Good","False_Honest",0,"wild",0.15,0,0]]],["\"No, I don't have the time to give a pet the attention it needs. I wish I did.\"",[["\"That's too bad.\"","Bad_Good","False_Honest",0,"wild",-0.06,0,0]]],["\"We had a cat when I was a kid, but that's all.\"",[["\"Oh.\"","Bad_Good","False_Honest",0,"wild",-0.12,0,0]]]]],["encounter_e","End5","Disappointed, you turn, struggle through the heavy brush, and find your way back to your car. Driving back to town, you contemplate the emptiness of your life and the loneliness you feel. You have wasted precious years pursuing a career doing stupid, meaningless things. It all adds up to a big fat nothing. If you were to die right now, nobody would even notice, and certainly nobody would cry. You realize that you are an insignificant wretch, a useless consumer of oxygen. You are worm snot, an artless, clay-brained minnow in the vast ocean of life. \n\n\"Oh, well...\" you think, \"should I have Mexican or Thai for dinner?\"",[],[],100,100,0,[]],["encounter_d","End4","You get lost wandering through the thick brush. You hear the distant sound of cars and follow it. You emerge at a different place on the road, a wide turnout where two cars are parked. Four men are huddled together between the cars. They turn to see you, and you can see that they're engaged in some sort of deal. Two of them pull out guns and shoot at you. You try to escape back into the brush, but you can't get very far and they riddle you with bullets. Your body is found five years later by a ten-year old boy who takes your skull home, puts it on top of his dresser and sticks a plastic dinosaur into its mouth.",[],[],100,100,0,[]],["encounter_c","End3","On the way out from the restaurant, you run into an old high school friend. He has put together a new startup, and he invites you to join. You take him up on his offer and work your butt off for two years, but when the company is bought out by Morton Salt Company, you get $22 million for your stock. You buy the latest, most powerful Tesla, crash it while driving home, and bleed to death on the pavement.",[],[],100,100,0,[]],["encounter_b","End2","You meet for lunch three weeks later, and Sam tells you all about her new boyfriend. He's such a great guy, and he really understands her. You don't ask her out again.",[],[],100,100,0,[]],["encounter_a","End1","You meet the next week, and the week after that, then you start dating, you fall madly in love, get married, and have a son you name Atlee. Twelve years later, you have an affair, so Sam has a retaliatory affair, but you work it out in counseling. Sam quits her job and you struggle to survive on your income alone. Atlee has trouble in school but eventually graduates. He gets into a fight and kills somebody. He is sentenced to 20 years in prison. Sam takes an overdose of drugs and dies at age 59. You die of prostate cancer ten years later.",[],[],100,100,0,[]]],"void_encounter":["void","Time Passes","The future can wait. You take this moment to breathe.",[],[],-1,-1,0,[["...Breathe...",[["...Just breathe...","pBad_Good","pTimid_Dominant",0,"wild",0,0,0]]]]],"splash_encounter":["splash","Welcome","This is an adaptation of Chris Crawford's \"RomCom\" storyworld. Feedback is welcome, you can contact us through the Thaddeus messageboard.",[],[],0,0,0,[["Begin",[["...","pBad_Good","pTimid_Dominant",0,"wild",0,0,0]]]]],"first_page":"wild","unique_id_seed":15,"char_unique_id_seed":2,"storyworld_title":"Romantic Comedy","storyworld_author":"Various"}
+      //Import game data and load splash screen when page is first opened.
+      importGameData();
+      displaySaveProfile();
+      loadEncounter(splash_encounter, false); //Do not record in historybook.
+    </script>
+  </body>
+</html>
